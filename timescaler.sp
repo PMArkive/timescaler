@@ -4,7 +4,7 @@
 #define PLUGIN_NAME           "Timescaler"
 #define PLUGIN_AUTHOR         "carnifex"
 #define PLUGIN_DESCRIPTION    "Scales triggers to match your timescale."
-#define PLUGIN_VERSION        "0.5"
+#define PLUGIN_VERSION        "0.6"
 #define PLUGIN_URL            ""
 
 #include <sourcemod>
@@ -18,7 +18,6 @@ ArrayList g_aTargetChanges[MAXPLAYERS + 1];
 ArrayList g_aGravityChanges[MAXPLAYERS + 1];
 bool g_bToggled[MAXPLAYERS + 1];
 int g_iTick[MAXPLAYERS + 1];
-
 
 enum struct target_t
 {
@@ -88,9 +87,9 @@ public void OnClientPutInServer(int client)
 
 public void Hook_PreThink(int client)
 {
-	//handle targetname changes
 	g_iTick[client]++;
 	
+	//handle targetname changes
 	int size = GetArraySize(g_aTargetChanges[client]);
 	for(int i = 0; i < size; i++)
 	{
@@ -106,6 +105,8 @@ public void Hook_PreThink(int client)
 		if(tickTime - startTime >= (targetChange.fDelay / timescale))
 		{
 			SetEntPropString(client, Prop_Data, "m_iName", targetChange.sTargetName);
+			
+			//PrintToChat(client, "setting targentname to: %s", targetChange.sTargetName);
 			
 			g_aTargetChanges[client].Erase(i);
 			size = size - 1;
@@ -145,9 +146,12 @@ public void OnEntitiesReady()
 void HookTriggers()
 {
 	HookEntityOutput("trigger_multiple", "OnTrigger", OnTrigger);
-	HookEntityOutput("trigger_multiple", "OnStartTouch", OnTrigger);
-	HookEntityOutput("trigger_multiple", "OnEndTouch", OnTrigger); //for fixing prespeed blockers on kz_bhop_badg3s
+	HookEntityOutput("trigger_multiple", "OnStartTouch", OnTrigger); //for fixing prespeed blockers on kz_bhop_badg3s
+	HookEntityOutput("trigger_multiple", "OnEndTouch", OnTrigger); 
 	HookEntityOutput("trigger_multiple", "OnTouching", OnTrigger);
+	
+	//fix blue boosters on badges
+	HookEntityOutput("func_button", "OnDamaged", OnTrigger);
 }
 
 public Action OnTrigger(const char[] output, int caller, int activator, float delay)
@@ -155,11 +159,14 @@ public Action OnTrigger(const char[] output, int caller, int activator, float de
 	Entity entity;
 	bool handled;
 	
-	float timescale = GetEntPropFloat(activator, Prop_Send, "m_flLaggedMovementValue");
-	
-	if(g_bToggled[activator] || timescale == 1.0 || !IsValidEntity(activator))
+	if(!IsValidEntity(activator))
 		return Plugin_Continue;
 	
+	float timescale = GetEntPropFloat(activator, Prop_Send, "m_flLaggedMovementValue");
+
+	if(g_bToggled[activator] || timescale == 1.0)
+		return Plugin_Continue;
+		
 	if(GetOutputEntity(caller, entity))
 	{
 		for(int i = 0; i < entity.OutputList.Length; ++i)
@@ -203,8 +210,7 @@ public Action OnTrigger(const char[] output, int caller, int activator, float de
 	entity.CleanUp();
 	
 	if(handled)
-	return Plugin_Handled;
+		return Plugin_Handled;
 	
 	return Plugin_Continue;
 }
-
