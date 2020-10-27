@@ -4,8 +4,8 @@
 #define PLUGIN_NAME           "Timescaler"
 #define PLUGIN_AUTHOR         "carnifex"
 #define PLUGIN_DESCRIPTION    "Scales triggers to match your timescale."
-#define PLUGIN_VERSION        "0.8"
-#define PLUGIN_URL            ""
+#define PLUGIN_VERSION        "1.0"
+#define PLUGIN_URL            "https://github.com/hermansimensen/timescaler"
 
 #include <sourcemod>
 #include <sdktools>
@@ -24,6 +24,8 @@ bool g_bTriggerActive[MAXPLAYERS + 1];
 int g_iTick[MAXPLAYERS + 1];
 float g_fPrevTimescale[MAXPLAYERS + 1];
 float g_fSpeedAdded[MAXPLAYERS + 1];
+
+ConVar g_cvUsePushFix;
 
 enum struct target_t
 {
@@ -61,6 +63,8 @@ public void OnPluginStart()
 {
 	RegConsoleCmd("sm_scalefix", Command_Toggle, "Toggle timescaling for teleport blocks");
 	
+	g_cvUsePushFix = CreateConVar("timescaler_use_pushfix", "1", "Some TAS-tools break trigger_push on css and csgo, which lets users abuse it and gain a lot more height and speed than what they should have. If you wish to use a seperate pushfix plugin, then disable this.", _, true, 0.0, true, 1.0);
+	
 	if(g_aTriggerPush == null)
 	{
 		g_aTriggerPush = new ArrayList(sizeof(trigger_push_t));
@@ -69,10 +73,8 @@ public void OnPluginStart()
 		ClearArray(g_aTriggerPush);
 	}
 	
-	HookEvent("round_start", Event_RoundStart, EventHookMode_Post);
+	HookEvent("round_start", Event_RoundStart, EventHookMode_PostNoCopy);
 }
-
-
 
 public Action Command_Toggle(int client, int args)
 {
@@ -156,13 +158,16 @@ public void Hook_PreThink(int client)
 	g_fPrevTimescale[client] = timescale;
 }
 
-public Event_RoundStart(Handle event, const char[] name, bool dontBroadcast)
+public Action Event_RoundStart(Event event, const char[] name, bool dontBroadcast)
 {
 	g_aTriggerPush.Clear();
-	
-	//I'll fix this for csgo eventually. You can use trigger_push fix by blacky on csgo currently, but its somewhat abuseable.
-	if(GetEngineVersion() == Engine_CSS)
-		GetTriggerPush();
+	GetTriggerPush();
+}
+
+public void OnMapStart()
+{
+	g_aTriggerPush.Clear();
+	GetTriggerPush();
 }
 
 public void OnEntitiesReady()
@@ -193,7 +198,6 @@ void GetTriggerPush()
 		
 		filterEnt = Entity_FindByName(filter, "filter_activator_name");
 		
-		
 		trigger_push_t trigger;
 		trigger.iIndex = ent;
 		trigger.fPushDir = pushDir;
@@ -221,35 +225,33 @@ void HookTriggers()
 public Action Hook_Touch(int ent, int other)
 {
 	if(!IsValidEntity(other) || !IsValidEntity(ent))
-	return Plugin_Continue;
+		return Plugin_Continue;
 	
-	MoveType movetype = GetEntityMoveType(other);
-	switch(movetype)
+	int spawnflags = GetEntProp(ent, Prop_Data, "m_spawnflags"); 
+	
+	trigger_push_t trigger;
+	
+	for(int i = 0; i < g_aTriggerPush.Length; i++)
 	{
-		case MOVETYPE_NONE, MOVETYPE_PUSH, MOVETYPE_NOCLIP:
+		g_aTriggerPush.GetArray(i, trigger);
+		
+		if(trigger.iIndex == ent)
+			break;
+	}
+	
+	if(DoesEntityPassFilter(other, ent, trigger))
+	{
+		float timescale = GetEntPropFloat(other, Prop_Data, "m_flLaggedMovementValue");
+		
+		if(timescale < g_fPrevTimescale[other])
 		{
-			return Plugin_Continue;
+			//prevent timescale abuse
+			float multiplier = g_fSpeedAdded[other] * timescale;
+			g_iTick[other] += RoundToCeil(multiplier) * RoundToCeil(g_fPrevTimescale[other] / timescale);
 		}
 		
-		default:
+		if(g_cvUsePushFix.BoolValue)
 		{
-			float timescale = GetEntPropFloat(other, Prop_Data, "m_flLaggedMovementValue");
-			int spawnflags = GetEntProp(ent, Prop_Data, "m_spawnflags");
-			char name[64];
-			GetEntPropString(other, Prop_Data, "m_iName", name, 64);
-			
-			trigger_push_t trigger;
-			
-			for(int i = 0; i < g_aTriggerPush.Length; i++)
-			{
-				g_aTriggerPush.GetArray(i, trigger);
-				
-				if(trigger.iIndex == ent)
-					break;
-			}
-			
-			
-			//if its a one time trigger, we add speed and remove it.
 			if(spawnflags & 0x80)
 			{
 				float vec[3];
@@ -262,87 +264,97 @@ public Action Hook_Touch(int ent, int other)
 				SetEntPropVector(other, Prop_Data, "m_vecAbsVelocity", vec);
 				
 				if(trigger.fPushDir[2] > 0.0)
-					SetEntPropEnt(other, Prop_Send, "m_hGroundEntity", -1);
+				SetEntPropEnt(other, Prop_Send, "m_hGroundEntity", -1);
 				
 				RemoveEdict(ent);
 			}
 			
-			if(timescale < g_fPrevTimescale[other])
+			if(!g_bTriggerActive[other])
 			{
-				//prevent timescale abuse
-				float multiplier = g_fSpeedAdded[other] * timescale;
-				g_iTick[other] += RoundToCeil(multiplier) * RoundToCeil(g_fPrevTimescale[other] / timescale);
+				g_fSpeedAdded[other] = 0.0;
+				g_bTriggerActive[other] = true;
 			}
 			
-			if(trigger.iFilterEntity != -1)
-			{
-				if(StrEqual(name, trigger.sFilterName, false))
-				{
-					if(!g_bTriggerActive[other])
-					{
-						g_fSpeedAdded[other] = 0.0;
-						g_bTriggerActive[other] = true;
-					}
-					
 					//lift the player up 1.0 units if they are on the ground..
-					if(trigger.fPushDir[2] > 0.0 && GetEntityFlags(other) & FL_ONGROUND)
-					{
-						SetEntPropEnt(other, Prop_Send, "m_hGroundEntity", -1);
-						float origin[3];
-						GetEntPropVector(other, Prop_Data, "m_vecAbsOrigin", origin);
-						origin[2] += 1.0;
-						TeleportEntity(other, origin, NULL_VECTOR, NULL_VECTOR);
-					}
-					
-					float vec[3];
-					GetEntPropVector(other, Prop_Send, "m_vecBaseVelocity", vec);
-					vec[0] = (trigger.fPushDir[0] * trigger.fPushSpeed);
-					vec[1] = (trigger.fPushDir[1] * trigger.fPushSpeed);
-					SetEntPropVector(other, Prop_Data, "m_vecBaseVelocity", vec);
-					
-					//why add vertical speed manually? Shavit-TAS breaks trigger_push boosters on lower timescales, which lets users gain a lot more height than they should get. This fixes that issue.
-					float absVelocity[3];
-					GetEntPropVector(other, Prop_Data, "m_vecAbsVelocity", absVelocity);
-					absVelocity[2] += (trigger.fPushDir[2] * trigger.fPushSpeed * GetTickInterval()) * timescale;
-					g_fSpeedAdded[other] += (trigger.fPushDir[2] * trigger.fPushSpeed * GetTickInterval()) * timescale;
-					SetEntPropVector(other, Prop_Data, "m_vecAbsVelocity", absVelocity);
-				} else
-				{
-					g_bTriggerActive[other] = false;	
-				}
-			} else
+			if(trigger.fPushDir[2] > 0.0 && GetEntityFlags(other) & FL_ONGROUND)
 			{
+				SetEntPropEnt(other, Prop_Send, "m_hGroundEntity", -1);
 				
-				//same thing, but this trigger has no filter.
-				
-				if(trigger.fPushDir[2] > 0.0 && GetEntityFlags(other) & FL_ONGROUND)
+				if(GetEngineVersion() == Engine_CSS)
 				{
-					SetEntPropEnt(other, Prop_Send, "m_hGroundEntity", -1);
 					float origin[3];
 					GetEntPropVector(other, Prop_Data, "m_vecAbsOrigin", origin);
 					origin[2] += 1.0;
 					TeleportEntity(other, origin, NULL_VECTOR, NULL_VECTOR);
 				}
-				
-				float vec[3];
-				GetEntPropVector(other, Prop_Send, "m_vecBaseVelocity", vec);
-				vec[0] = (trigger.fPushDir[0] * trigger.fPushSpeed);
-				vec[1] = (trigger.fPushDir[1] * trigger.fPushSpeed);
-				SetEntPropVector(other, Prop_Data, "m_vecBaseVelocity", vec);
-				
-				float absVelocity[3];
-				GetEntPropVector(other, Prop_Data, "m_vecAbsVelocity", absVelocity);
-				absVelocity[2] += (trigger.fPushDir[2] * trigger.fPushSpeed * GetTickInterval()) * timescale;
-				g_fSpeedAdded[other] += (trigger.fPushDir[2] * trigger.fPushSpeed * GetTickInterval()) * timescale;
-				SetEntPropVector(other, Prop_Data, "m_vecAbsVelocity", absVelocity);
 			}
 			
+			float vec[3];
+			GetEntPropVector(other, Prop_Send, "m_vecBaseVelocity", vec);
+			vec[0] = (trigger.fPushDir[0] * trigger.fPushSpeed);
+			vec[1] = (trigger.fPushDir[1] * trigger.fPushSpeed);
+			vec[2] = 0.0;
+			SetEntPropVector(other, Prop_Data, "m_vecBaseVelocity", vec);
+			
+			//why add vertical speed manually? Shavit-TAS breaks trigger_push boosters on lower timescales, which lets users gain a lot more height than they should get. This fixes that issue.
+			float absVelocity[3];
+			GetEntPropVector(other, Prop_Data, "m_vecAbsVelocity", absVelocity);
+			absVelocity[2] += (trigger.fPushDir[2] * trigger.fPushSpeed * GetTickInterval()) * timescale;
+			g_fSpeedAdded[other] += (trigger.fPushDir[2] * trigger.fPushSpeed * GetTickInterval()) * timescale;
+			SetEntPropVector(other, Prop_Data, "m_vecAbsVelocity", absVelocity);
+		
 			int flags = GetEntityFlags(other) | FL_BASEVELOCITY;
 			SetEntityFlags(other, flags);
+		}
+	} else
+	{
+		g_bTriggerActive[other] = false;
+	}
+	
+	if(g_cvUsePushFix.BoolValue)
+		return Plugin_Handled;
+		
+	return Plugin_Continue;
+}
 
-			return Plugin_Handled;
+public bool DoesEntityPassFilter(int entity, int trigger, trigger_push_t triggerPush)
+{
+	int spawnflags = GetEntProp(trigger, Prop_Data, "m_spawnflags");
+	int clientAllowed = spawnflags & 0x01;
+	if(clientAllowed == 1 && (entity > 0 && entity < MaxClients))
+	{
+		MoveType movetype = GetEntityMoveType(entity);
+		
+		switch(movetype)
+		{
+			case MOVETYPE_NONE, MOVETYPE_PUSH, MOVETYPE_NOCLIP:
+			{
+				return false;
+			}
+			
+			default:
+			{
+				if(triggerPush.iFilterEntity == -1)
+				{
+					return true;
+				} else
+				{
+					char name[64];
+					GetEntPropString(entity, Prop_Data, "m_iName", name, 64);
+					if(StrEqual(name, triggerPush.sFilterName, false))
+					{
+						return true;
+					} else
+					{
+						return false;
+					}
+				}
+			}
+		
 		}
 	}
+	
+	return true;
 }
 
 public Action OnTrigger(const char[] output, int caller, int activator, float delay)
