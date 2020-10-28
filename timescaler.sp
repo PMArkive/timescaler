@@ -64,6 +64,8 @@ public void OnPluginStart()
 	RegConsoleCmd("sm_scalefix", Command_Toggle, "Toggle timescaling for teleport blocks");
 	
 	g_cvUsePushFix = CreateConVar("timescaler_use_pushfix", "1", "Some TAS-tools break trigger_push on css and csgo, which lets users abuse it and gain a lot more height and speed than what they should have. If you wish to use a seperate pushfix plugin, then disable this.", _, true, 0.0, true, 1.0);
+	AutoExecConfig();
+	
 	
 	if(g_aTriggerPush == null)
 	{
@@ -227,7 +229,11 @@ public Action Hook_Touch(int ent, int other)
 	if(!IsValidEntity(other) || !IsValidEntity(ent))
 		return Plugin_Continue;
 	
+	if(other > MaxClients)
+		return Plugin_Continue;
+	
 	int spawnflags = GetEntProp(ent, Prop_Data, "m_spawnflags"); 
+	
 	
 	trigger_push_t trigger;
 	
@@ -241,7 +247,7 @@ public Action Hook_Touch(int ent, int other)
 	
 	if(DoesEntityPassFilter(other, ent, trigger))
 	{
-		float timescale = GetEntPropFloat(other, Prop_Data, "m_flLaggedMovementValue");
+		float timescale = GetEntPropFloat(other, Prop_Send, "m_flLaggedMovementValue");
 		
 		if(timescale < g_fPrevTimescale[other])
 		{
@@ -350,7 +356,7 @@ public bool DoesEntityPassFilter(int entity, int trigger, trigger_push_t trigger
 					}
 				}
 			}
-		
+	
 		}
 	}
 	
